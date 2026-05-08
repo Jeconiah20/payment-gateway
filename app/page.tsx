@@ -1,65 +1,223 @@
-import Image from "next/image";
+'use client';
+
+import { useEffect, useState } from 'react';
+import { CardDetails, PaymentPayload, Currency } from '@/types';
+import { usePaymentStore } from '@/store/paymentStore';
+import CardInput from '@/components/CardInput';
+import CardPreview from '@/components/CardPreview';
+import StatusScreen from '@/components/StatusScreen';
+import TransactionHistory from '@/components/TransactionHistory';
+import TransactionDetails from '@/components/TransactionDetails';
+import { submitPayment } from '@/utils/api';
 
 export default function Home() {
+  const [cardDetails, setCardDetails] = useState<CardDetails>({
+    cardholderName: '',
+    cardNumber: '',
+    expiry: '',
+    cvv: '',
+  });
+
+  const [paymentDetails, setPaymentDetails] = useState({
+    amount: 0,
+    currency: 'INR' as Currency,
+  });
+
+  const store = usePaymentStore();
+  const [isMounted, setIsMounted] = useState(false);
+
+  useEffect(() => {
+    setIsMounted(true);
+    store.initializeTransactions();
+  }, []);
+
+  const handleSubmit = async (
+    details: CardDetails,
+    amount: number,
+    currency: Currency
+  ) => {
+    setCardDetails(details);
+    setPaymentDetails({ amount, currency });
+
+    const transactionId = crypto.randomUUID();
+    store.setCurrentTransaction(transactionId);
+    store.setStatus('processing');
+
+    await processPayment(details, amount, currency, transactionId);
+  };
+
+  const processPayment = async (
+    details: CardDetails,
+    amount: number,
+    currency: Currency,
+    transactionId: string
+  ) => {
+    const payload: PaymentPayload = {
+      transactionId,
+      cardholderName: details.cardholderName,
+      cardNumber: details.cardNumber,
+      expiry: details.expiry,
+      cvv: details.cvv,
+      amount,
+      currency,
+    };
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+      // Simulate 2 seconds processing time before showing result
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      const response = await submitPayment(payload, controller.signal);
+      clearTimeout(timeoutId);
+
+      if (response.success) {
+        store.setStatus('success');
+        store.addTransaction({
+          id: transactionId,
+          amount,
+          currency,
+          status: 'success',
+          timestamp: new Date().toISOString(),
+          attempts: store.currentAttempt,
+        });
+      } else {
+        store.setStatus('failed');
+        store.setFailureReason(response.reason);
+        store.addTransaction({
+          id: transactionId,
+          amount,
+          currency,
+          status: 'failed',
+          timestamp: new Date().toISOString(),
+          reason: response.reason,
+          attempts: store.currentAttempt,
+        });
+      }
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        store.setStatus('timeout');
+        store.setFailureReason('Request timeout - please try again');
+        store.addTransaction({
+          id: transactionId,
+          amount,
+          currency,
+          status: 'timeout',
+          timestamp: new Date().toISOString(),
+          reason: 'Request timeout',
+          attempts: store.currentAttempt,
+        });
+      } else {
+        store.setStatus('failed');
+        store.setFailureReason('Network error - please try again');
+        store.addTransaction({
+          id: transactionId,
+          amount,
+          currency,
+          status: 'failed',
+          timestamp: new Date().toISOString(),
+          reason: 'Network error',
+          attempts: store.currentAttempt,
+        });
+      }
+    }
+  };
+
+  const handleRetry = async () => {
+    if (store.currentAttempt >= 3) return;
+
+    store.incrementAttempt();
+    store.setStatus('processing');
+    store.setFailureReason(null);
+
+    const currentTxn = store.transactions.find(
+      (t) => t.id === store.currentTransactionId
+    );
+
+    if (currentTxn) {
+      await processPayment(
+        cardDetails,
+        paymentDetails.amount,
+        paymentDetails.currency,
+        store.currentTransactionId!
+      );
+    }
+  };
+
+  const handleNewPayment = () => {
+    store.setStatus('idle');
+    store.resetAttempt();
+    store.setFailureReason(null);
+    store.selectTransaction(null);
+    setCardDetails({
+      cardholderName: '',
+      cardNumber: '',
+      expiry: '',
+      cvv: '',
+    });
+    setPaymentDetails({ amount: 0, currency: 'INR' });
+  };
+
+  if (!isMounted) return null;
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+    <main className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 py-8 px-4">
+      <div className="mx-auto max-w-7xl">
+        <h1 className="mb-2 text-center text-4xl font-bold text-gray-900">
+          Payment Gateway
+        </h1>
+        <p className="mb-8 text-center text-gray-600">
+          Secure payment processing
+        </p>
+
+        <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
+          {/* Left: Form */}
+          <div className="rounded-xl bg-white p-6 shadow-lg lg:col-span-1">
+            {store.status === 'idle' ? (
+              <>
+                <h2 className="mb-6 text-2xl font-bold">Payment Details</h2>
+                                <CardInput
+                  onSubmit={handleSubmit}
+                  onChange={setCardDetails}
+                  isDisabled={store.status === 'processing'}
+                />
+              </>
+            ) : (
+              <StatusScreen
+                status={store.status}
+                reason={store.failureReason}
+                amount={paymentDetails.amount}
+                currency={paymentDetails.currency}
+                currentAttempt={store.currentAttempt}
+                onRetry={handleRetry}
+                onNewPayment={handleNewPayment}
+              />
+            )}
+          </div>
+
+          {/* Middle: Card Preview */}
+          <div className="flex items-center justify-center rounded-xl bg-white p-6 shadow-lg lg:col-span-1">
+            <CardPreview cardDetails={cardDetails} />
+          </div>
+
+          {/* Right: Transaction History */}
+          <div className="rounded-xl bg-white p-6 shadow-lg lg:col-span-1">
+            <h2 className="mb-4 text-2xl font-bold">Transaction History</h2>
+            <TransactionHistory
+              transactions={store.transactions}
+              onSelectTransaction={store.selectTransaction}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+          </div>
         </div>
-      </main>
-    </div>
+      </div>
+
+      {store.selectedTransaction && (
+        <TransactionDetails
+          transaction={store.selectedTransaction}
+          onClose={() => store.selectTransaction(null)}
+        />
+      )}
+    </main>
   );
 }
